@@ -15,12 +15,15 @@ import spray.json._
 import scala.concurrent.Future
 import scala.concurrent.duration._
 
-case class Guitar(make: String, model: String)
+case class Guitar(make: String, model: String, quantity: Int = 0)
 
 object GuitarDB {
   case class CreateGuitar(guitar: Guitar)
   case class GuitarCreated(id: Int)
   case class FindGuitar(id: Int)
+  case class GetGuitarsByStock(flag: Boolean)
+  case class UpdateStock(id: Int, quantity: Int)
+  case class StockUpdated(quantity: Int)
   case object FindAllGuitars
 
   def props : Props = Props(new GuitarDB)
@@ -43,11 +46,24 @@ class GuitarDB extends Actor with ActorLogging {
     case FindAllGuitars =>
       log.info("Retrieving all guitars")
       sender() ! guitars.values.toList
+    case GetGuitarsByStock(flag) =>
+      log.info(s"Getting guitars by stock flag existence = $flag")
+      if (flag == true) {
+        sender() ! guitars.values.toList.filter(g => g.quantity > 0)
+      } else {
+        sender() ! guitars.values.toList.filter(g => g.quantity == 0)
+      }
+    case UpdateStock(id, quantity) =>
+      log.info(s"Updating Stock for Guitar with id $id with additional quantity of $quantity")
+      val originalGuitar = guitars(id)
+      guitars = guitars + ( id -> Guitar(originalGuitar.make,originalGuitar.model,
+        originalGuitar.quantity + quantity))
+      sender() ! StockUpdated(originalGuitar.quantity + quantity)
   }
 }
 
 trait GuitarStoreJsonProtocol extends DefaultJsonProtocol {
-  implicit val guitarFormat = jsonFormat2(Guitar)
+  implicit val guitarFormat = jsonFormat3(Guitar)
 }
 
 object LowLevelRest extends App with GuitarStoreJsonProtocol {
@@ -57,7 +73,7 @@ object LowLevelRest extends App with GuitarStoreJsonProtocol {
   import system.dispatcher
 
   //Marshalling
-  val simpleGuitar = Guitar("fender","stratocster")
+  val simpleGuitar = Guitar("fender","stratocster",0)
   println(simpleGuitar.toJson.prettyPrint)
 
   //Unmarshalling
@@ -65,7 +81,8 @@ object LowLevelRest extends App with GuitarStoreJsonProtocol {
     """
       |{
       | "make" : "fender",
-      | "model" : "xyz1"
+      | "model" : "xyz1",
+      | "quantity" : 100
       |}
       |""".stripMargin
 
@@ -76,9 +93,9 @@ object LowLevelRest extends App with GuitarStoreJsonProtocol {
   //Prepare some data in the db
   val guitarDB = system.actorOf(GuitarDB.props,"LowLevelGuitarDBActor")
   val guitarList = List(
-    Guitar("fender","stratocaster"),
-    Guitar("gibson","12312xax"),
-    Guitar("yamaha", "yamah11")
+    Guitar("fender","stratocaster",31),
+    Guitar("gibson","12312xax",20),
+    Guitar("yamaha", "yamah11",2)
   )
 
   guitarList.foreach{ g =>
@@ -127,6 +144,45 @@ object LowLevelRest extends App with GuitarStoreJsonProtocol {
         //fetch guitar associated with the guitarId /api/guitar?id=121
         getGuitar(queryParam)
       }
+
+    case HttpRequest(HttpMethods.GET, uri@Uri.Path("/api/guitar/inventory"), _, _, _) =>
+      val queryParam = uri.query()
+      val guitarId = queryParam.get("flag").map(_.toBoolean) //Default is string
+      guitarId match {
+        case Some(flag: Boolean) =>
+          val guitarsFuture: Future[List[Guitar]] = (guitarDB ? GetGuitarsByStock(flag)).mapTo[List[Guitar]]
+          guitarsFuture.map { guitar =>
+            HttpResponse(
+              entity = HttpEntity(
+                ContentTypes.`application/json`,
+                guitar.toJson.prettyPrint
+              )
+            )
+          }
+
+      }
+
+    case HttpRequest(HttpMethods.POST, uri@Uri.Path("/api/guitar/inventory"), _, _, _) =>
+      //entities are a Source[ByteString]
+      val queryParam = uri.query()
+      println("Failing to process multiple query params 1")
+      val idGuitar = queryParam.get("id").map(_.toInt) //Default is string
+      val quantity = queryParam.get("quantity").map(_.toInt) //Default is string
+      println("Failing to process multiple query params 2")
+      (idGuitar,quantity)  match {
+        case(Some(id: Int), Some(quanity: Int)) =>
+          val stockUpdateFuture: Future[StockUpdated] = (guitarDB ? UpdateStock(id, quanity)).mapTo[StockUpdated]
+          stockUpdateFuture.map { s =>
+            HttpResponse(
+              StatusCodes.OK,
+              entity = HttpEntity(
+                ContentTypes.`text/plain(UTF-8)`,
+                s"Stock Updated to: ${s.quantity}"
+              )
+            )
+          }
+      }
+
 
     case HttpRequest(HttpMethods.POST,Uri.Path("/api/guitar"),_,entity,_) =>
       //entities are a Source[ByteString]
