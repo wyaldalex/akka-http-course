@@ -52,6 +52,16 @@ object HighLevelIntro extends App {
         ))
       }
     }
-  Http().bindAndHandle(chainedComplexRoute,"localhost",10001)
+
+  //More complex routes
+  val MultiPathExtraction = path("api" / "order" / IntNumber / IntNumber) { (id,inventory) =>
+    println(s"Ive got two numbers in my path $id and $inventory")
+    complete(StatusCodes.OK)
+  }
+
+
+
+  //Http().bindAndHandle(chainedComplexRoute,"localhost",10001)
+  Http().bindAndHandle(MultiPathExtraction,"localhost",10001)
 
 }
