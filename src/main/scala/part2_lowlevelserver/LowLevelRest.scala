@@ -3,6 +3,7 @@ package part2_lowlevelserver
 import akka.actor.{Actor, ActorLogging, ActorSystem, Props}
 import akka.http.scaladsl.Http
 import akka.http.scaladsl.Http.IncomingConnection
+import akka.http.scaladsl.model.Uri.Query
 import akka.http.scaladsl.model.{ContentTypes, HttpEntity, HttpMethod, HttpMethods, HttpRequest, HttpResponse, StatusCode, StatusCodes, Uri}
 import akka.pattern.ask
 import akka.stream.ActorMaterializer
@@ -86,18 +87,47 @@ object LowLevelRest extends App with GuitarStoreJsonProtocol {
 
   implicit val defaultTimeout = Timeout(2 seconds)
   import GuitarDB._
+  def getGuitar(query: Query) : Future[HttpResponse] = {
+    val guitarId = query.get("id").map(_.toInt) //Default is string
+
+    guitarId match {
+      case None => Future(HttpResponse(StatusCodes.NotFound))
+      case Some(id: Int) =>
+        val futureGuitar : Future[Option[Guitar]] = (guitarDB ? FindGuitar(id)).mapTo[Option[Guitar]]
+        futureGuitar.map {
+          case None => HttpResponse(StatusCodes.NotFound)
+          case Some(guitar) =>
+            HttpResponse(
+              entity = HttpEntity(
+                ContentTypes.`application/json`,
+                guitar.toJson.prettyPrint
+              )
+            )
+
+        }
+
+    }
+  }
   //retrieve all guitars
   val requestHandler: HttpRequest => Future[HttpResponse] = {
-    case HttpRequest(HttpMethods.GET,Uri.Path("/api/guitar"),_,_,_) =>
-      val guitarsFuture : Future[List[Guitar]] = (guitarDB ? FindAllGuitars).mapTo[List[Guitar]]
-      guitarsFuture.map{ guitar =>
-        HttpResponse(
-          entity = HttpEntity(
-          ContentTypes.`application/json`,
-            guitar.toJson.prettyPrint
+    case HttpRequest(HttpMethods.GET,uri@Uri.Path("/api/guitar"),_,_,_) =>
+      val queryParam = uri.query()
+      if (queryParam.isEmpty) {
+        val guitarsFuture: Future[List[Guitar]] = (guitarDB ? FindAllGuitars).mapTo[List[Guitar]]
+        guitarsFuture.map { guitar =>
+          HttpResponse(
+            entity = HttpEntity(
+              ContentTypes.`application/json`,
+              guitar.toJson.prettyPrint
+            )
           )
-        )
+        }
+
+      } else {
+        //fetch guitar associated with the guitarId /api/guitar?id=121
+        getGuitar(queryParam)
       }
+
     case HttpRequest(HttpMethods.POST,Uri.Path("/api/guitar"),_,entity,_) =>
       //entities are a Source[ByteString]
       val strictEntityFuture = entity.toStrict(3 seconds)
@@ -106,8 +136,14 @@ object LowLevelRest extends App with GuitarStoreJsonProtocol {
         val guitar = guitarJsonString.parseJson.convertTo[Guitar]
 
         val guitarCreatedFuture : Future[GuitarCreated] = (guitarDB ? CreateGuitar(guitar)).mapTo[GuitarCreated]
-        guitarCreatedFuture.map{ _ =>
-          HttpResponse(StatusCodes.Created)
+        guitarCreatedFuture.map{ r =>
+          HttpResponse(
+            StatusCodes.Created,
+            entity = HttpEntity(
+              ContentTypes.`text/plain(UTF-8)`,
+              s"Guitar Created with Id: ${r.id.toString}"
+            )
+          )
         }
       }
 
